@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Habemus Papam &mdash; play online</title>
+<style>
+/*__CSS__*/
+</style>
+</head>
+<body>
+
+<div id="title" class="screen">
+  <div class="tbox">
+    <img class="cover" id="coverimg" alt="Habemus Papam cover art">
+    <div class="tcol">
+      <h1>HABEMUS<br>PAPAM</h1>
+      <div class="sub">A game of influence, persuasion and discernment within the Sistine Chapel. Play online with three to six cardinals, each on their own screen.</div>
+      <div class="tabs"><button id="tabCreate" class="on">Create a room</button><button id="tabJoin">Join a room</button></div>
+      <div class="field"><label class="lab">YOUR NAME</label><input class="inp" id="myName" maxlength="14" placeholder="Cardinal ..."></div>
+      <div class="field hidden" id="codeField"><label class="lab">ROOM CODE</label><input class="inp code" id="roomCode" maxlength="4" placeholder="ABCD"></div>
+      <div id="terr" class="err hidden"></div>
+      <div class="row"><button class="btn big" id="goBtn">CREATE ROOM</button><button class="btn ghost" id="rulesBtn0">Read the rules</button></div>
+      <details class="adv"><summary>Server settings</summary>
+        <p>Game server address (leave empty when this page is served by the game server itself):</p>
+        <input class="inp" id="serverUrl" placeholder="https://your-app.onrender.com" style="font-size:14px"></details>
+    </div>
+  </div>
+</div>
+
+<div id="lobby" class="screen hidden">
+  <div class="lbox">
+    <h2>THE CONCLAVE GATHERS</h2>
+    <div class="codebox"><small>ROOM CODE &mdash; SHARE IT WITH YOUR FRIENDS</small><b id="lcode">----</b>
+      <button class="btn ghost" id="copyLink">Copy invite link</button></div>
+    <div id="seatlist"></div>
+    <div class="hint" id="lhint"></div>
+    <div id="hostctl" class="hidden">
+      <div class="row" style="justify-content:center"><button class="btn ghost" id="addBot">+ Add a computer player</button></div>
+      <label class="chk" style="justify-content:center"><input type="checkbox" id="optReflect"><span><b>Optional rule: Reflect gives Influence.</b> Your Conclave Reflect also places 1 protected Influence on you.</span></label>
+      <div class="row" style="justify-content:center"><button class="btn big" id="startBtn">BEGIN THE CONCLAVE</button></div>
+    </div>
+    <div class="row" style="justify-content:center;margin-top:14px"><button class="btn ghost" id="rulesBtn1">Read the rules</button><button class="btn ghost" id="leaveBtn">Leave room</button></div>
+  </div>
+</div>
+
+<div id="game" class="screen hidden">
+  <div class="top">
+    <div class="logo">HABEMUS PAPAM</div>
+    <span class="chip" id="chipRound"></span><span class="chip" id="chipPhase"></span><span class="chip" id="chipDean"></span><span class="chip" id="chipYou"></span>
+    <div class="sp"></div>
+    <span class="chip" id="chipRoom"></span><button class="btn ghost" id="rulesBtn">Rules</button><button class="btn ghost" id="leaveBtn2">Leave</button>
+  </div>
+  <div class="layout">
+    <main>
+      <section class="panel"><h3>THE VOTE TRACKER &nbsp;&middot;&nbsp; ONE CIRCLE PER VOTE</h3><div id="tracker"></div><div class="legend" id="legend"></div></section>
+      <div class="triple">
+        <section class="panel"><h3>THE UNDECIDED POOL</h3><div id="pool"></div></section>
+        <section class="panel"><h3>THE HOLY SPIRIT</h3><div id="hsp"></div></section>
+        <section class="panel"><h3>INFLUENCE SUPPLY</h3><div id="supply"></div></section>
+      </div>
+      <div class="mats" id="mats"></div>
+    </main>
+    <aside class="aside">
+      <section class="panel" id="stage"><h3 id="sttl">THE CONCLAVE</h3><div class="steps" id="steps"></div><div id="sbody"></div><div class="ticker" id="ticker">&nbsp;</div></section>
+      <section class="panel"><h3>TABLE TALK</h3><div class="chat"><div class="chatlog" id="chatlog"></div><div class="crow"><select id="chatTo"></select><input id="chatText" maxlength="240" placeholder="Bargain, promise, threaten..."><button id="chatSend">Send</button></div></div></section>
+      <section class="panel"><h3>CHRONICLE</h3><div class="log" id="log"></div></section>
+    </aside>
+  </div>
+  <div class="ftr">Negotiation is open at all times: talk, bargain, promise and betray. Whispers are private. Pieces only move through actions, cards and eliminations.</div>
+</div>
+<div id="handtray" class="hidden"></div>
+<div id="root"></div>
+
+<script src="config.js"></script>
+<script>
+/*__ASSETS__*/
+/*__ENGINE__*/
+</script>
+<script>
+(function () {
+'use strict';
+const $ = (s, el) => (el || document).querySelector(s);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const TYPEC = { anti: ['#8E1B2B', 'AGAINST THE LEADER'], pro: ['#4E2A6E', 'FOR THE LEADER'], wild: ['#8A6A22', 'WILDCARD'] };
+const STEPNAMES = ['Select', 'Reveal', 'Resolve', 'Holy Spirit', 'Ballot / Elimination'];
+const STEPIDX = { start: -1, select: 0, reveal: 1, resolve: 2, spirit: 3, ballot: 4, elimination: 4, end: 4, over: 4 };
+
+/* ================================================================ connection */
+const params = new URLSearchParams(location.search);
+if (params.get('server')) localStorage.setItem('hp_server', params.get('server'));
+let SERVER = (params.get('server') || localStorage.getItem('hp_server') || window.HP_SERVER || '').replace(/\/+$/, '');
+let session = null, es = null, S = null, G = null, lastErr = 0;
+try { session = JSON.parse(localStorage.getItem('hp_session') || 'null'); } catch (e) { session = null; }
+const saveSession = () => { if (session) localStorage.setItem('hp_session', JSON.stringify(session)); else localStorage.removeItem('hp_session'); };
+
+async function api(type, body) {
+  let r;
+  try {
+    r = await fetch(SERVER + '/api/' + type, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({}, session ? { room: session.room, token: session.token } : {}, body || {})) });
+  } catch (e) { throw new Error('Cannot reach the game server' + (SERVER ? ' at ' + SERVER : '') + '. Check the address under "Server settings".'); }
+  let j = {}; try { j = await r.json(); } catch (e) { /* */ }
+  if (!r.ok) { const err = new Error(j.error || ('Request failed (' + r.status + ')')); err.status = r.status; throw err; }
+  return j;
+}
+function show(id) { ['title', 'lobby', 'game'].forEach((s) => $('#' + s).classList.toggle('hidden', s !== id)); }
+function banner(msg, ms) { const b = document.createElement('div'); b.className = 'banner'; b.textContent = msg; document.body.appendChild(b); setTimeout(() => b.remove(), ms || 3500); }
+
+function connect() {
+  if (es) { es.close(); es = null; }
+  es = new EventSource(SERVER + '/api/stream?room=' + encodeURIComponent(session.room) + '&token=' + encodeURIComponent(session.token));
+  es.addEventListener('state', (e) => { lastErr = 0; const b = $('#offline'); if (b) b.remove(); onState(JSON.parse(e.data)); });
+  es.addEventListener('logs', (e) => { $('#log').innerHTML = ''; JSON.parse(e.data).forEach(addLog); });
+  es.addEventListener('log', (e) => addLog(JSON.parse(e.data)));
+  es.addEventListener('chats', (e) => { $('#chatlog').innerHTML = ''; JSON.parse(e.data).forEach(addChat); });
+  es.addEventListener('chat', (e) => addChat(JSON.parse(e.data)));
+  es.addEventListener('whisper', (e) => addWhisper(JSON.parse(e.data)));
+  es.addEventListener('kicked', () => { leaveLocal('You were removed from the room.'); });
+  es.onerror = async () => {
+    if (!$('#offline')) { const b = document.createElement('div'); b.id = 'offline'; b.className = 'banner'; b.textContent = 'Connection lost \u2014 reconnecting\u2026'; document.body.appendChild(b); }
+    lastErr++;
+    if (lastErr % 3 === 0 && session) {
+      try { const r = await fetch(SERVER + '/api/ping?room=' + session.room + '&token=' + session.token); if (r.status === 404) leaveLocal('That room no longer exists.'); } catch (e) { /* still offline */ }
+    }
+  };
+}
+function leaveLocal(msg) {
+  if (es) { es.close(); es = null; } session = null; saveSession(); S = null; G = null;
+  const b = $('#offline'); if (b) b.remove(); $('#handtray').classList.add('hidden'); document.body.classList.remove('hasHand');
+  const v = document.querySelector('.victory'); if (v) v.remove();
+  show('title'); if (msg) showTitleError(msg);
+}
+
+/* ================================================================ title screen */
+let tab = 'create';
+function showTitleError(m) { const e = $('#terr'); e.textContent = m; e.classList.toggle('hidden', !m); }
+function setTab(t) {
+  tab = t; $('#tabCreate').classList.toggle('on', t === 'create'); $('#tabJoin').classList.toggle('on', t === 'join');
+  $('#codeField').classList.toggle('hidden', t !== 'join'); $('#goBtn').textContent = t === 'create' ? 'CREATE ROOM' : 'JOIN ROOM'; showTitleError('');
+}
+async function go() {
+  showTitleError('');
+  SERVER = ($('#serverUrl').value.trim() || SERVER || '').replace(/\/+$/, ''); if ($('#serverUrl').value.trim()) localStorage.setItem('hp_server', SERVER);
+  const name = $('#myName').value.trim(); if (name) localStorage.setItem('hp_name', name);
+  try {
+    session = null;
+    const r = tab === 'create' ? await api('create', { name }) : await api('join', { name, room: $('#roomCode').value.trim().toUpperCase() });
+    session = { room: r.room, token: r.token, server: SERVER }; saveSession(); connect();
+  } catch (e) { showTitleError(e.message); }
+}
+function showRules() {
+  const m = document.createElement('div'); m.className = 'mod';
+  m.innerHTML = '<div class="card"><h2>THE RULES IN BRIEF</h2>' +
+  '<p><b>Goal.</b> Be the first candidate to hold <b>68 of the 102 votes</b>. Votes are never created or destroyed after the ballots: they only move.</p>' +
+  '<h4>Each round</h4><ul><li><b>Select</b> one Action card in secret, on your own screen. You may not play the card you played last round.</li><li><b>Reveal</b> together.</li><li><b>Resolve</b>: Reflects first, then everything else, clockwise starting with the <b>Dean</b>.</li><li><b>Holy Spirit</b>: the Dean draws a hidden card and it resolves.</li><li><b>Ballot</b> (rounds 1\u20136) or <b>Elimination</b> (round 7 on); then the Dean Token passes.</li></ul>' +
+  '<h4>Phase I: the Conclave (Rounds 1\u20136)</h4><ul><li><b>Converse</b> \u2014 3 Influence: 2 on you, 1 on another candidate.</li><li><b>Reflect</b> \u2014 name a rival; the first Influence disc each of you receives this round is protected.</li><li><b>Call for Discussion</b> \u2014 move 1 unprotected Influence disc between candidates; if no other candidate has any, place 1 on yourself.</li><li>At the ballot, Influence ranks the candidates; 17 votes leave the Pool:</li></ul>' +
+  '<table><tr><th>Rank</th><th>3 players</th><th>4</th><th>5</th><th>6</th></tr><tr><td>1st</td><td>7</td><td>6</td><td>6</td><td>5</td></tr><tr><td>2nd</td><td>6</td><td>5</td><td>4</td><td>4</td></tr><tr><td>3rd</td><td>4</td><td>4</td><td>3</td><td>3</td></tr><tr><td>4th</td><td></td><td>2</td><td>2</td><td>2</td></tr><tr><td>5th</td><td></td><td></td><td>2</td><td>2</td></tr><tr><td>6th</td><td></td><td></td><td></td><td>1</td></tr></table>' +
+  '<h4>Phase II: the Final Phase (Round 7 on)</h4><ul><li><b>Converse</b> \u2014 take up to 2 unprotected votes from one candidate.</li><li><b>Reflect</b> \u2014 protect all your votes and all the votes of one other candidate.</li><li><b>Seek Consensus</b> \u2014 take up to 2 unprotected votes from every candidate with strictly more votes than you.</li><li>Each round the candidate with the <b>fewest votes is eliminated</b>. They rank the others and deal out <b>all</b> their votes down the ranking: with 6 players left 5, 4, 3, 2, 1; with 5 left 4, 3, 2, 1; with 4 left 3, 2, 1; and so on. If votes remain they deal another round in the same order, and stop the moment they run out. With two left, the survivor gets everything.</li></ul>' +
+  '<h4>The Dean</h4><p>The Dean breaks <b>every</b> tie, even ties they are part of. The token passes clockwise each round; after an elimination the newly eliminated player takes it.</p>' +
+  '<h4>Negotiation</h4><p>Talk, bargain, threaten and betray at any time \u2014 use Table Talk, and whisper to one player for private deals. Nothing is binding, and pieces never change hands except through actions, cards and eliminations.</p>' +
+  '<div class="row"><button class="btn" id="closeRules">Close</button></div></div>';
+  document.body.appendChild(m); m.querySelector('#closeRules').onclick = () => m.remove(); m.onclick = (e) => { if (e.target === m) m.remove(); };
+}
+
+/* ================================================================ lobby */
+function renderLobby(s) {
+  show('lobby');
+  $('#lcode').textContent = s.room;
+  const host = s.you === 0;
+  let h = '';
+  s.seats.forEach((q, i) => {
+    const c = HP.COLORS[i];
+    h += '<div class="seatrow" style="' + cvars(c) + '">' + shape(c.shape, 24, c.light) + '<b>' + esc(q.name) + '</b>' +
+      (q.host ? '<span class="tg">HOST</span>' : '') + (i === s.you ? '<span class="tg" style="background:var(--goldL);color:#2a0a10">YOU</span>' : '') + (q.bot ? '<span class="tg">COMPUTER</span>' : '<span class="dot ' + (q.connected ? '' : 'off') + '" title="' + (q.connected ? 'online' : 'offline') + '"></span>') +
+      (host && i > 0 ? '<button class="x" data-rm="' + i + '">Remove</button>' : '') + '</div>';
+  });
+  for (let i = s.seats.length; i < 6; i++) h += '<div class="seatrow empty" style="border-color:#6a5a3a"><b>Waiting for a player\u2026</b></div>';
+  $('#seatlist').innerHTML = h;
+  $('#seatlist').querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => api('lobby', { action: 'remove', index: Number(b.dataset.rm) }).catch((e) => banner(e.message)); });
+  $('#hostctl').classList.toggle('hidden', !host);
+  $('#optReflect').checked = !!s.options.reflectPlus;
+  $('#addBot').disabled = s.seats.length >= 6; $('#startBtn').disabled = s.seats.length < 3;
+  $('#lhint').textContent = host ? (s.seats.length < 3 ? 'You need at least 3 cardinals. Share the code, or add computer players.' : s.seats.length + ' cardinals are ready.') : 'Waiting for the host to begin the Conclave\u2026' + (s.options.reflectPlus ? ' (Optional rule: Reflect gives Influence)' : '');
+}
+
+/* ================================================================ visuals (same as the offline game) */
+function shape(kind, size, fill) {
+  const s = size || 18, f = fill || '#fff';
+  const body = { circle: '<circle cx="12" cy="12" r="9.5"/>', square: '<rect x="3" y="3" width="18" height="18" rx="2"/>', triangle: '<polygon points="12,2.5 22,20 2,20"/>',
+    diamond: '<polygon points="12,1.5 20,12 12,22.5 4,12"/>', star: '<polygon points="12,1.5 14.8,8.7 22.4,9.2 16.5,14 18.5,21.5 12,17.4 5.5,21.5 7.5,14 1.6,9.2 9.2,8.7"/>', hexagon: '<polygon points="12,2 21,7 21,17 12,22 3,17 3,7"/>' }[kind];
+  return '<svg width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="' + f + '">' + body + '</svg>';
+}
+const cvars = (c) => '--c:' + c.hex + ';--cd:' + c.dark + ';--cl:' + c.light;
+function actionMini(key, q) {
+  if (!key || key === '?') return '<div class="mini" style="' + cvars(q.c) + '"></div>';
+  const A = HP.ACTIONS[key], nm = A.name.replace(' for ', ' for<br>').replace('Seek ', 'Seek<br>');
+  return '<div class="mini" style="' + cvars(q.c) + '"><div class="hd">' + nm + '</div>' + shape(q.c.shape, 20, q.c.hex) + '<div class="tg">' + (G && G.phase === 'C' ? A.tagC : A.tagF) + '</div></div>';
+}
+function flipSlot(q, key, shown, anim) {
+  return '<div class="box flip ' + (shown ? 'show' : '') + (anim ? '' : ' noanim') + '" data-p="' + q.id + '"><div class="in"><div class="bk"><img src="' + ASSETS['actBack' + q.id] + '"></div><div class="fc">' + actionMini(key, q) + '</div></div></div>';
+}
+function hsFace(card, phase) {
+  const t = TYPEC[card.type], txt = card.text.replace(/\{s\}/g, phase === 'C' ? 'Influence' : 'votes');
+  const nm = card.name === 'Unexpected Consensus' ? ['UNEXPECTED', 'CONSENSUS'] : ['SPIRIT OF', card.name.toUpperCase()];
+  return '<div class="hface"><div class="band" style="background:' + t[0] + '"><small>' + nm[0] + '</small><span>' + nm[1] + '</span></div><hr><p>' + esc(txt) + '</p><hr><div class="lg">' + (phase === 'C' ? 'support = Influence in the Conclave' : 'support = votes in the Final Phase') + '</div></div>';
+}
+function hsBig(card, phase, flipped) {
+  return '<div class="hsc ' + (flipped ? 'show' : '') + '" id="bigcard"><div class="in"><div class="bk"><img src="' + ASSETS.hsBack + '"></div><div class="fc">' + hsFace(card, phase) + '</div></div></div>';
+}
+function bigAction(key, q, phase, disabled, selected) {
+  const A = HP.ACTIONS[key], tag = phase === 'C' ? A.tagC : A.tagF; let txt = phase === 'C' ? A.textC : A.textF;
+  if (key === 'reflect' && phase === 'C' && G && G.reflectPlus) txt += ' (Optional rule: you also place 1 protected Influence on yourself.)';
+  return '<button class="acard ' + (selected ? 'sel' : '') + '" data-k="' + key + '" ' + (disabled ? 'disabled' : '') + ' style="' + cvars(q.c) + '"><div class="ah"><div><small>' + tag + '</small><b>' + A.name + '</b></div>' + shape(q.c.shape, 30, '#fff') + '</div><span class="lab">' + (phase === 'C' ? 'CONCLAVE' : 'FINAL PHASE') + '</span><p>' + esc(txt) + '</p>' + (disabled ? '<div class="lock">Played last round</div>' : '') + '</button>';
+}
+
+/* ================================================================ rendering the shared board */
+const prevShown = {};
+const PICKING = { ids: null, resolve: null };
+let ACTIVE = [];
+function makeView(s) {
+  const g = s.game, v = Object.assign({}, g);
+  v.p = g.p.map((q) => Object.assign({}, q, { c: HP.COLORS[q.id] }));
+  v.name = (i) => v.p[i].name; v.n = g.n;
+  v.actionsFor = () => (g.phase === 'C' ? ['converse', 'reflect', 'call'] : ['converse', 'reflect', 'seek']);
+  return v;
+}
+function renderGame(s) {
+  const g = G;
+  $('#chipRound').innerHTML = 'Round <b>' + g.round + '</b> \u00B7 ' + esc(g.roundName);
+  $('#chipPhase').innerHTML = g.phase === 'C' ? '<b>Phase I</b> \u00B7 The Conclave' : '<b>Phase II</b> \u00B7 The Final Phase';
+  $('#chipDean').innerHTML = '<img src="' + ASSETS.token + '" width="20" height="20" alt=""> Dean: <b>' + esc(g.name(g.dean)) + '</b>' + (g.p[g.dean].out ? ' (eliminated)' : '');
+  const me = g.p[s.you];
+  $('#chipYou').innerHTML = shape(me.c.shape, 16, me.c.light) + ' You: <b>' + esc(me.name) + '</b>' + (me.out ? ' (eliminated)' : '');
+  $('#chipRoom').innerHTML = 'Room <b>' + esc(s.room) + '</b>';
+  $('#sttl').textContent = g.phase === 'C' ? 'THE CONCLAVE \u2014 ROUND ' + g.round : 'THE FINAL PHASE \u2014 ROUND ' + g.round;
+  const si = STEPIDX[g.stage] == null ? -1 : STEPIDX[g.stage];
+  $('#steps').innerHTML = STEPNAMES.map((x, i) => '<span class="' + (i === si ? 'on' : '') + '">' + (i === 4 ? (g.phase === 'C' ? 'Ballot' : 'Elimination') : x) + '</span>').join('');
+  ACTIVE = (s.waiting || []).map((w) => w.seat); if (s.prompt && s.prompt.who != null) ACTIVE.push(s.prompt.who); if (g.current) ACTIVE.push(g.current.who);
+  renderTracker(g); renderPool(g); renderSupply(g); renderHS(g); renderMats(g, s);
+}
+function renderTracker(g) {
+  const at = {}; g.p.forEach((q) => { if (!q.out) (at[q.votes] = at[q.votes] || []).push(q); });
+  const circ = (v) => {
+    const m = at[v] || [];
+    return '<div class="vc ' + (v % 5 === 0 ? 'f5 ' : '') + (v % 10 === 0 ? 'f10 ' : '') + (m.length ? 'has' : '') + '"><span class="num">' + v + '</span>' +
+      (m.length ? '<div class="mks ' + (m.length === 1 ? 'one' : '') + '">' + m.map((q) => '<i class="mk" title="' + esc(q.name) + '" style="background:' + q.c.hex + '"></i>').join('') + '</div>' : '') + '</div>';
+  };
+  let h = '<div class="trk">'; for (let v = 0; v < 68; v++) h += circ(v); h += '</div>';
+  const m68 = at[68] || [];
+  h += '<div class="win"><div class="big68"><span class="n">68</span><small>WINS</small>' + (m68.length ? '<div class="mks">' + m68.map((q) => '<i class="mk" style="background:' + q.c.hex + '"></i>').join('') + '</div>' : '') + '</div><div class="wgrid">';
+  for (let v = 69; v <= 102; v++) h += circ(v);
+  h += '</div><div class="wcap">HABEMUS<br>PAPAM!</div></div>';
+  $('#tracker').innerHTML = h;
+  $('#legend').innerHTML = g.p.map((q) => '<span><i style="background:' + q.c.hex + '"></i>' + esc(q.name) + ' ' + q.votes + (q.out ? ' (out)' : '') + '</span>').join('');
+}
+function renderPool(g) {
+  let c = ''; for (let i = 0; i < 102; i++) c += '<i class="' + (i < g.pool ? '' : 'gone') + '"></i>';
+  $('#pool').innerHTML = '<div class="pool">' + c + '</div><div class="big">' + g.pool + ' votes undecided</div><div class="cap">17 leave the Pool at each Conclave ballot</div>';
+}
+function renderSupply(g) {
+  let c = ''; for (let i = 0; i < 18; i++) c += '<img src="' + ASSETS.disc + '" class="' + (i < g.supply ? '' : 'gone') + '" alt="">';
+  $('#supply').innerHTML = '<div class="discs">' + c + '</div><div class="big">' + g.supply + ' discs</div><div class="cap">18 in the game</div>';
+}
+function renderHS(g) {
+  const top = g.usedTop;
+  $('#hsp').innerHTML = '<div class="hs"><div class="pile"><div class="cd">' + (g.deckCount ? '<div class="stk" style="transform:translate(3px,3px)"></div><div class="stk" style="transform:translate(1.5px,1.5px)"></div><img class="back" src="' + ASSETS.hsBack + '" style="position:relative">' : '<div class="empty"></div>') + '</div>THE DECK<br><b>' + g.deckCount + '</b> cards</div>' +
+    '<div class="pile"><div class="cd">' + (top ? '<div style="position:absolute;inset:0;transform:scale(.42);transform-origin:0 0;width:238%;height:238%">' + hsFace(top, g.phase) + '</div>' : '<div class="empty"></div>') + '</div>USED<br><b>' + g.usedCount + '</b> cards</div></div>' +
+    '<div class="cap" style="margin-top:6px">' + (top ? 'Last: ' + (top.name === 'Unexpected Consensus' ? '' : 'Spirit of ') + esc(top.name) : 'No card drawn yet') + '</div>';
+}
+function renderMats(g, s) {
+  const flips = [], host = s.you === 0;
+  const h = g.p.map((q) => {
+    const c = q.c, active = ACTIVE.includes(q.id);
+    const hasAct = q.act && q.act !== '?', showNow = q.shown && hasAct, was = prevShown[q.id] === true;
+    if (showNow && !was) flips.push(q.id);
+    const thisBox = q.act ? flipSlot(q, hasAct ? q.act : '?', showNow && was, showNow && !was) : '<div class="box"></div>';
+    const lastBox = q.last ? '<div class="box" style="border-style:solid">' + actionMini(q.last, q) + '</div>' : '<div class="box"></div>';
+    const dz = (n) => { let x = ''; for (let i = 0; i < Math.min(n, 9); i++) x += '<img src="' + ASSETS.disc + '" alt="">'; return '<div class="dz">' + x + '<span>' + n + '</span></div>'; };
+    const pct = Math.min(100, q.votes / 102 * 100);
+    const tags = (q.id === s.you ? '<span class="you">YOU</span>' : '') + (q.bot ? '<span class="tag2">COMPUTER</span>' : (!q.connected && !q.out ? '<span class="tag2">OFFLINE</span>' : '')) +
+      (host && !q.connected && !q.bot && !q.out ? '<button class="tk" data-take="' + q.id + '">Computer plays for them</button>' : '');
+    return '<div class="mat ' + (q.out ? 'out ' : '') + (active ? 'active ' : '') + (q.id === s.you ? 'mine ' : '') + (PICKING.ids && PICKING.ids.includes(q.id) ? 'target' : '') + '" data-id="' + q.id + '" style="' + cvars(c) + '">' +
+      '<div class="mh">' + shape(c.shape, 20, '#fff') + '<b>' + esc(q.name) + '</b>' + tags + '<span class="sp"></span>' + (g.dean === q.id ? '<span class="dn"><img src="' + ASSETS.token + '" alt="">DEAN</span>' : '') + '</div>' +
+      '<div class="mb"><div class="cslots"><div class="cs">This round' + thisBox + '</div><div class="cs">Last round' + lastBox + '</div></div>' +
+      '<div class="zones"><div><div class="zh">Influence</div><div class="two"><div class="z"><small>unprotected</small>' + dz(q.infl - q.pi) + '</div><div class="z pr"><small>protected</small>' + dz(q.pi) + '</div></div></div>' +
+      '<div><div class="zh">Votes</div><div class="vrow"><span class="vnum">' + q.votes + '</span><small>' + (q.votes - q.pv) + ' unprotected \u00B7 ' + q.pv + ' protected</small></div><div class="bar"><i style="width:' + pct + '%"></i><u></u><em>68</em></div></div></div></div>' +
+      (q.out ? '<div class="outb">ELIMINATED</div>' : '') + '</div>';
+  }).join('');
+  $('#mats').style.setProperty('--cols', g.n === 4 ? 2 : 3);
+  $('#mats').innerHTML = h;
+  g.p.forEach((q) => { prevShown[q.id] = !!(q.shown && q.act && q.act !== '?'); });
+  $('#mats').querySelectorAll('[data-take]').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); api('botTakeover', { index: Number(b.dataset.take) }).catch((er) => banner(er.message)); }; });
+  if (flips.length) requestAnimationFrame(() => requestAnimationFrame(() => flips.forEach((id) => { const el = document.querySelector('.flip[data-p="' + id + '"]'); if (el) el.classList.add('show'); })));
+}
+document.addEventListener('click', (e) => {
+  const mat = e.target.closest && e.target.closest('.mat.target');
+  if (mat && PICKING.resolve) { const id = Number(mat.dataset.id); if (PICKING.ids.includes(id)) PICKING.resolve(id); }
+});
+
+/* ================================================================ prompts (decisions asked of me) */
+let shownPrompt = null, shownWait = '', lastTicker = '', cardTimer = null;
+function body(html) { $('#sbody').innerHTML = html; }
+function setTicker(t) {
+  const el = $('#ticker'); if (t === lastTicker) return; lastTicker = t;
+  el.innerHTML = esc(t || '\u00A0'); el.classList.remove('new'); void el.offsetWidth; el.classList.add('new');
+}
+function addLog(e) { const l = $('#log'), d = document.createElement('div'); d.innerHTML = '<b>R' + e.round + '</b> ' + esc(e.msg); l.appendChild(d); l.scrollTop = l.scrollHeight; }
+function submit(id, answer) { return api('answer', { promptId: id, answer }).catch(() => { /* someone else answered first */ }); }
+function continueButton(pr) {
+  const t = $('#ticker');
+  const holder = document.createElement('div'); holder.className = 'row';
+  const b = document.createElement('button'); b.className = 'btn'; b.textContent = pr.label || 'Continue'; b.style.marginTop = '8px'; b.id = 'contBtn';
+  b.onclick = () => { b.disabled = true; submit(pr.id, true); };
+  holder.appendChild(b); t.appendChild(holder); b.focus();
+}
+function roundStartBody(g) {
+  const sub = g.round === 1 ? 'Extra omnes! The doors are sealed. All 102 votes are undecided and every action is open to you.' :
+    g.round === 6 ? 'The Final Round of the Conclave. The sixth ballot empties the Pool. Nobody is eliminated.' :
+    g.round === 7 ? 'The Pool is empty. Every cardinal has chosen. From now on votes can only move, and one candidate is eliminated every round. Seek Consensus joins your hand.' :
+    g.phase === 'C' ? 'Build, protect and redirect Influence. The ballot at the end of the round awards 17 votes.' : 'One candidate will be eliminated at the end of this round.';
+  const dq = g.p[g.dean];
+  return '<div class="ttl">ROUND ' + g.round + ' \u2014 ' + esc(g.roundName.toUpperCase()) + '</div><p>' + esc(sub) + '</p><div class="who" style="' + cvars(dq.c) + '"><img src="' + ASSETS.token + '" width="26" height="26" alt=""> ' + esc(dq.name) + ' holds the Dean Token' + (dq.out ? ' (eliminated: breaks ties and draws the Spirit only)' : ' and resolves first') + '</div><p style="font-size:13px;opacity:.85">The Dean breaks every tie this round. Talk freely \u2014 or whisper.</p>';
+}
+function statText(p) { return G.phase === 'C' ? 'Influence ' + p.infl + (p.pi ? ' (' + p.pi + ' protected)' : '') : 'Votes ' + p.votes + (p.pv ? ' (' + p.pv + ' protected)' : ''); }
+function whoBanner(i, suffix) { const q = G.p[i]; return '<div class="who" style="' + cvars(q.c) + '">' + shape(q.c.shape, 20, '#fff') + ' ' + esc(q.name) + ' ' + suffix + '</div>'; }
+
+function renderStage(s) {
+  const pr = s.prompt, g = G;
+  const key = pr ? 'p' + pr.id : 'w' + JSON.stringify(s.waiting) + g.stage + g.round;
+  const tray = $('#handtray');
+  if (key === shownPrompt) { if (!(pr && pr.kind === 'select')) {/* keep */} return; }
+  shownPrompt = key; PICKING.ids = null; PICKING.resolve = null;
+  $('#ticker .row') && $('#ticker .row').remove();
+  tray.classList.add('hidden'); document.body.classList.remove('hasHand');
+  if (cardTimer) { clearTimeout(cardTimer); cardTimer = null; }
+  if (!pr) {
+    const w = s.waiting || [];
+    if (w.some((x) => x.kind === 'select')) {
+      const names = w.filter((x) => x.kind === 'select').map((x) => g.name(x.seat));
+      body('<div class="ttl">Choosing actions\u2026</div><p>Everyone picks an Action card in secret, on their own screen. Locked-in cards are shown face down on the mats.</p><p>Waiting for: <b>' + names.map(esc).join(', ') + '</b></p>');
+    } else if (w.length) {
+      const x = w[0];
+      body(whoBanner(x.seat, x.kind === 'order' ? 'is ranking' : 'is deciding') + '<p class="ttl" style="font-size:15.5px;line-height:1.3">' + esc(x.title || '') + '</p><p style="opacity:.8">Waiting for ' + esc(g.name(x.seat)) + '\u2026' + (!G.p[x.seat].connected && !G.p[x.seat].bot ? ' (offline \u2014 the host can let a computer play for them)' : '') + '</p>');
+    } else if (g.stage === 'resolve') {
+      body('<div class="ttl">Cards revealed</div><p>Reflects resolve first, then every other action, clockwise from the Dean:</p><p><b>' + g.order.map((i) => esc(g.name(i))).join(' \u2192 ') + '</b></p>');
+    } else body('');
+    return;
+  }
+  setTicker(pr.kind === 'continue' && pr.ctx === 'roundStart' ? 'Ready when you are.' : pr.kind === 'continue' && pr.ctx === 'reveal' ? 'Last round\u2019s cards stay face up beside the new ones.' : s.ticker);
+  if (pr.kind === 'continue') {
+    if (pr.ctx === 'roundStart') body(roundStartBody(g));
+    else if (pr.ctx === 'reveal') body('<div class="ttl">All actions are locked in</div><p>Every candidate has chosen. Anyone may turn the cards over \u2014 together.</p>');
+    else if (pr.ctx === 'card') {
+      const t = TYPEC[pr.card.type];
+      body('<div class="ttl">' + (pr.nested ? 'Another card is drawn' : 'The Holy Spirit moves') + '</div><p>' + esc(g.name(pr.dean)) + ' (the Dean) draws the hidden card\u2026</p>' + hsBig(pr.card, g.phase, false) + '<p style="text-align:center;color:#F2DC9A">' + t[1] + '</p>');
+      cardTimer = setTimeout(() => { const b = $('#bigcard'); if (b) b.classList.add('show'); }, 600);
+    }
+    continueButton(pr); return;
+  }
+  if (pr.kind === 'select') { renderHand(pr); body('<div class="ttl">Choose your Action</div><p>Pick a card from your hand at the bottom of the screen. Nobody else can see it until the reveal.</p>'); return; }
+  if (pr.kind === 'pick') renderPick(pr, s);
+  if (pr.kind === 'order') renderOrder(pr, s);
+}
+function renderHand(pr) {
+  const g = G, me = g.p[S.you], tray = $('#handtray'); let sel = null;
+  const draw = () => {
+    tray.innerHTML = '<div class="htl">' + esc(me.name) + ' \u2014 choose your Action in secret</div><div class="hrow">' + g.actionsFor().map((k) => bigAction(k, me, g.phase, !pr.avail.includes(k), k === sel)).join('') +
+      '<div style="text-align:left;max-width:230px"><p style="font-size:13px;margin:0 0 8px;color:var(--parch)">' + (me.last ? 'You played <b>' + HP.ACTIONS[me.last].name + '</b> last round, so you cannot choose it again.' : 'No card is face up yet, so any action may be played.') + (g.dean === me.id ? ' You hold the Dean Token.' : '') + '</p><button class="btn big" id="lock" ' + (sel ? '' : 'disabled') + '>' + (sel ? 'Lock in ' + HP.ACTIONS[sel].name : 'Lock in') + '</button></div></div>';
+    tray.querySelectorAll('.acard').forEach((b) => { b.onclick = () => { sel = b.dataset.k; draw(); }; });
+    const l = tray.querySelector('#lock'); l.onclick = () => { l.disabled = true; tray.classList.add('hidden'); document.body.classList.remove('hasHand'); submit(pr.id, sel); };
+  };
+  draw(); tray.classList.remove('hidden'); document.body.classList.add('hasHand');
+}
+function renderPick(pr, s) {
+  const g = G, q = g.p[pr.who];
+  const finish = (v) => { PICKING.ids = null; PICKING.resolve = null; submit(pr.id, v); body(whoBanner(pr.who, 'decides') + '<p style="opacity:.8">Sent. Waiting for the next step\u2026</p>'); renderMats(g, s); };
+  PICKING.ids = pr.ids.slice(); PICKING.resolve = finish;
+  const chips = pr.ids.map((i) => { const p = g.p[i]; return '<button class="cchip" data-i="' + i + '" style="' + cvars(p.c) + '">' + shape(p.c.shape, 22, '#fff') + '<span>' + esc(p.name) + '<small>' + statText(p) + '</small></span></button>'; }).join('');
+  body(whoBanner(pr.who, 'decides') + '<p class="ttl" style="font-size:15.5px;line-height:1.3">' + esc(pr.title) + '</p><div class="chips">' + chips + '</div>' + (pr.skip ? '<div class="row"><button class="btn ghost" id="skp">' + esc(pr.skip) + '</button></div>' : '') + '<p style="font-size:12px;opacity:.7;margin-top:8px">You can also click a player\u2019s mat.</p>');
+  $('#sbody').querySelectorAll('.cchip').forEach((b) => { b.onclick = () => finish(Number(b.dataset.i)); });
+  if (pr.skip) $('#skp').onclick = () => finish(null);
+  renderMats(g, s);
+}
+function renderOrder(pr, s) {
+  const g = G, q = g.p[pr.who], ids = pr.ids, m = ids.length, kind = pr.orderKind, value = pr.value;
+  let chosen = [];
+  const preview = () => {
+    if (kind !== 'elim') return '';
+    const got = {}; ids.forEach((i) => { got[i] = 0; }); let left = value; const ord = chosen.concat(ids.filter((i) => !chosen.includes(i)));
+    while (left > 0) for (let k = 0; k < m && left > 0; k++) { const gv = Math.min(m - k, left); got[ord[k]] += gv; left -= gv; }
+    return '<div class="ordlist"><b>' + esc(q.name) + ' deals ' + value + ' votes:</b>' + ord.map((i, k) => '<div>' + (k + 1) + '. ' + esc(g.p[i].name) + ' <b style="margin-left:auto">+' + got[i] + '</b></div>').join('') + (chosen.length < m ? '<div style="opacity:.6;font-size:12px">(preview with the current order)</div>' : '') + '</div>';
+  };
+  const draw = () => {
+    const left = ids.filter((i) => !chosen.includes(i));
+    body(whoBanner(pr.who, kind === 'tie' ? '(Dean) rules' : 'ranks') + '<p class="ttl" style="font-size:15.5px;line-height:1.3">' + esc(pr.title) + '</p>' +
+      '<p style="font-size:13px;margin:2px 0">Click in order, ' + (kind === 'elim' ? 'first choice first' : 'highest first') + ' (' + chosen.length + ' of ' + m + ' placed):</p><div class="chips">' +
+      left.map((i) => { const p = g.p[i]; return '<button class="cchip" data-i="' + i + '" style="' + cvars(p.c) + '">' + shape(p.c.shape, 22, '#fff') + '<span>' + esc(p.name) + '<small>' + (g.phase === 'C' ? 'Influence ' + p.infl : 'Votes ' + p.votes) + '</small></span></button>'; }).join('') + '</div>' +
+      (chosen.length ? '<div class="ordlist"><b>Your order:</b>' + chosen.map((i, k) => '<div>' + (k + 1) + '. ' + esc(g.p[i].name) + '</div>').join('') + '</div>' : '') + preview() +
+      '<div class="row"><button class="btn ghost" id="undo" ' + (chosen.length ? '' : 'disabled') + '>Undo</button><button class="btn" id="ok" ' + (chosen.length >= m ? '' : 'disabled') + '>Confirm order</button></div>');
+    $('#sbody').querySelectorAll('.cchip').forEach((b) => { b.onclick = () => { chosen.push(Number(b.dataset.i)); if (chosen.length === m - 1) chosen.push(ids.find((x) => !chosen.includes(x))); draw(); }; });
+    $('#undo').onclick = () => { chosen = []; draw(); };
+    $('#ok').onclick = () => { $('#ok').disabled = true; submit(pr.id, chosen); body(whoBanner(pr.who, 'ranks') + '<p style="opacity:.8">Sent. Waiting for the next step\u2026</p>'); };
+  };
+  draw();
+}
+
+/* ================================================================ chat */
+function chatNameStyle(i) { const c = HP.COLORS[i]; return 'color:' + c.light + ';font-weight:700'; }
+function seatName(i) { return S && S.seats[i] ? S.seats[i].name : '?'; }
+function addChat(m) {
+  const l = $('#chatlog'), d = document.createElement('div'), priv = m.to !== 'all';
+  d.innerHTML = '<span style="' + chatNameStyle(m.from) + '">' + esc(seatName(m.from)) + '</span>' + (priv ? ' <span class="priv">whispers' + (m.from === (S && S.you) ? ' to ' + esc(seatName(m.to)) : ' to you') + '</span>' : '') + ': ' + esc(m.text);
+  l.appendChild(d); l.scrollTop = l.scrollHeight;
+}
+function addWhisper(w) { const l = $('#chatlog'), d = document.createElement('div'); d.className = 'wh'; d.textContent = seatName(w.from) + ' whispers to ' + seatName(w.to) + '\u2026'; l.appendChild(d); l.scrollTop = l.scrollHeight; }
+function refreshChatTo() {
+  const sel = $('#chatTo'), cur = sel.value; let h = '<option value="all">Everyone</option>';
+  S.seats.forEach((q, i) => { if (i !== S.you) h += '<option value="' + i + '">Whisper: ' + esc(q.name) + '</option>'; });
+  if (sel.dataset.sig !== h) { sel.innerHTML = h; sel.dataset.sig = h; if (cur) sel.value = cur; }
+}
+function sendChat() {
+  const t = $('#chatText').value.trim(); if (!t) return; const to = $('#chatTo').value;
+  $('#chatText').value = ''; api('chat', { to: to === 'all' ? 'all' : Number(to), text: t }).catch((e) => banner(e.message));
+}
+
+/* ================================================================ state handler */
+function onState(s) {
+  S = s;
+  if (s.status === 'lobby' || !s.game) {
+    const v = document.querySelector('.victory'); if (v) v.remove();
+    shownPrompt = null; Object.keys(prevShown).forEach((k) => delete prevShown[k]); lastTicker = '';
+    $('#handtray').classList.add('hidden'); document.body.classList.remove('hasHand');
+    renderLobby(s); return;
+  }
+  if ($('#game').classList.contains('hidden')) show('game');
+  G = makeView(s);
+  renderGame(s); refreshChatTo(); renderStage(s);
+  const keepLocal = s.prompt && s.prompt.kind === 'continue' && (s.prompt.ctx === 'roundStart' || s.prompt.ctx === 'reveal');
+  if (!keepLocal) setTicker(s.ticker);
+  if (s.status === 'over') showVictory(s); else { const v = document.querySelector('.victory'); if (v) v.remove(); }
+  if (s.status === 'error') banner('The game hit an unexpected error. Please start a new room.', 8000);
+}
+function showVictory(s) {
+  if (document.querySelector('.victory')) return;
+  const g = G, w = g.p[g.winner], root = document.createElement('div'); root.className = 'victory'; root.style.cssText = cvars(w.c);
+  const rank = g.p.slice().sort((a, b) => b.votes - a.votes || (a.out ? 1 : 0) - (b.out ? 1 : 0));
+  root.innerHTML = '<div><img src="' + ASSETS.dove + '" width="180" alt=""><div style="letter-spacing:.3em;color:var(--parch)">ANNUNTIO VOBIS GAUDIUM MAGNUM\u2026</div><h1>HABEMUS PAPAM!</h1><div class="wn">' + shape(w.c.shape, 34, '#fff').replace('<svg', '<svg style="vertical-align:-6px;margin-right:10px"') + esc(w.name) + ' is elected Pope</div><p style="font-size:18px">with <b>' + w.votes + '</b> of the 102 votes in Round ' + g.round + '.<br><span style="opacity:.85">The new Pope chooses a papal name \u2014 and wins the game.</span></p><div class="stand">' +
+    rank.map((q) => '<div style="' + cvars(q.c) + '"><span>' + esc(q.name) + '</span><b>' + q.votes + '</b><small>' + (q.id === g.winner ? 'POPE' : q.out ? 'eliminated' : 'runner-up') + '</small></div>').join('') + '</div><div class="row" style="justify-content:center"><button class="btn big" id="again">Back to the lobby</button><button class="btn ghost" id="leaveV">Leave room</button></div></div>';
+  document.body.appendChild(root);
+  root.querySelector('#again').onclick = () => api('lobby', { action: 'playAgain' }).catch((e) => banner(e.message));
+  root.querySelector('#leaveV').onclick = () => leaveLocal('');
+}
+
+/* ================================================================ wiring */
+$('#coverimg').src = ASSETS.cover;
+$('#tabCreate').onclick = () => setTab('create'); $('#tabJoin').onclick = () => setTab('join');
+$('#goBtn').onclick = go;
+['myName', 'roomCode'].forEach((id) => $('#' + id).addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); }));
+$('#roomCode').addEventListener('input', (e) => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z]/g, ''); });
+$('#rulesBtn0').onclick = showRules; $('#rulesBtn1').onclick = showRules; $('#rulesBtn').onclick = showRules;
+$('#copyLink').onclick = () => { const u = location.origin + location.pathname + '?room=' + S.room + (SERVER && SERVER !== location.origin ? '&server=' + encodeURIComponent(SERVER) : ''); (navigator.clipboard ? navigator.clipboard.writeText(u) : Promise.reject()).then(() => banner('Invite link copied'), () => prompt('Copy this invite link:', u)); };
+$('#addBot').onclick = () => api('lobby', { action: 'addBot' }).catch((e) => banner(e.message));
+$('#optReflect').onchange = (e) => api('lobby', { action: 'options', options: { reflectPlus: e.target.checked } }).catch((er) => banner(er.message));
+$('#startBtn').onclick = () => api('lobby', { action: 'start' }).catch((e) => banner(e.message));
+const leave = async () => { if (!confirm('Leave this room?')) return; leaveLocal(''); };
+$('#leaveBtn').onclick = leave; $('#leaveBtn2').onclick = leave;
+$('#chatSend').onclick = sendChat; $('#chatText').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+$('#myName').value = localStorage.getItem('hp_name') || ''; $('#serverUrl').value = SERVER;
+if (params.get('room')) { setTab('join'); $('#roomCode').value = String(params.get('room')).toUpperCase().slice(0, 4); }
+if (session && session.room) {
+  fetch(SERVER + '/api/ping?room=' + session.room + '&token=' + session.token).then((r) => { if (r.ok) connect(); else leaveLocal(''); }).catch(() => leaveLocal(''));
+}
+window.__hp = { get state() { return S; } };
+})();
+</script>
+</body>
+</html>

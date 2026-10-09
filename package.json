@@ -1,0 +1,10 @@
+{
+  "name": "habemus-papam-online",
+  "version": "1.0.0",
+  "description": "Habemus Papam - an online multiplayer board game of influence and persuasion in the Sistine Chapel (3-6 players).",
+  "private": true,
+  "main": "server.js",
+  "scripts": { "start": "node server.js", "test": "node test_server.js" },
+  "engines": { "node": ">=18" },
+  "license": "UNLICENSED"
+}

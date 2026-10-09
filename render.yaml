@@ -1,0 +1,15 @@
+# Render Blueprint: New + > Blueprint, pick this repository.
+services:
+  - type: web
+    name: habemus-papam
+    runtime: node
+    plan: free
+    buildCommand: echo "no build step - zero dependencies"
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # Optional: if the web page is hosted on Vercel, restrict API access to that address.
+      # - key: ALLOW_ORIGIN
+      #   value: https://your-app.vercel.app
